@@ -336,6 +336,14 @@ void refine_inter_task(const Task *task, const std::vector<PhysicalRegion> &regi
                 color_index.push_back(make_pair(idx_right_sub_tree, idx_right_sub_tree + right_idx_add - 2));
             }
         }
+        if( task_counter == 0 )&&( n == 0 ){
+            // Need to colour the root
+            IndexSpace is = lr.get_index_space();
+            DomainPointColoring coloring;
+            coloring[0] = Rect<1>(args.idx, args.idx);
+            Rect<1>color_space = Rect<1>(0,0);
+            runtime->create_index_partition(ctx, is, color_space, coloring, DISJOINT_KIND, args.partition_color);
+        }
         if( task_counter > 0 ){
             IndexSpace is = lr.get_index_space();
             DomainPointColoring coloring;
