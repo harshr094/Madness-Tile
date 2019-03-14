@@ -333,7 +333,7 @@ void refine_inter_task(const Task *task, const std::vector<PhysicalRegion> &regi
                 arg_map.set_point( task_counter, TaskArgument(&right_args, sizeof(Arguments)));
                 task_counter++;
                 color_index.push_back(make_pair(idx_left_sub_tree,idx_right_sub_tree-1));
-                color_index.push_back(make_pair(idx_right_sub_tree, idx_right_sub_tree + right_idx_add - 1));
+                color_index.push_back(make_pair(idx_right_sub_tree, idx_right_sub_tree + right_idx_add - 2));
             }
         }
         if( task_counter > 0 ){
