@@ -131,8 +131,6 @@ void print_task(const Task *task, const std::vector<PhysicalRegion> &regions, Co
         tree.pop();
         int n = temp.n;
         int l = temp.l;
-        if( n > 8 )
-            continue;
         coord_t idx = temp.idx;
         idx_left_sub_tree = idx+1;
         idx_right_sub_tree = idx + static_cast<coord_t>(pow(2, max_depth - n));
