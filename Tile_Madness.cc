@@ -229,7 +229,6 @@ void refine_inter_task(const Task *task, const std::vector<PhysicalRegion> &regi
         runtime->execute_task(ctx, refine_launcher);
     }
     else{
-        cout<<"Helper Region "<<n+tile_height<<"~"<<args.l<<"~"<<args.idx<<endl;
         ArgumentMap arg_map;
         const FieldAccessor<READ_ONLY,HelperArgs,1,coord_t,Realm::AffineAccessor<HelperArgs,1,coord_t> > read_acc(regions[1], FID_X);
         int task_counter=0;
