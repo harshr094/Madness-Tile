@@ -20,6 +20,7 @@ enum TASK_IDs{
     COMPRESS_INTER_TASK_ID,
     RECONSTRUCT_INTER_TASK_ID,
     RECONSTRUCT_INTRA_TASK_ID,
+    NORM_TASK_ID,
 };
 
 enum FieldId{
@@ -150,6 +151,13 @@ void top_level_task(const Task *task, const std::vector<PhysicalRegion> &regions
 
     cout<<"Launching Print Task After Reconstruct"<<endl;
     runtime->execute_task(ctx, print_launcher);
+
+    cout<<"Launching Norm Task on Reconstruct Tree"<<endl;
+    TaskLauncher norm_launcher(NORM_TASK_ID, TaskArgument(&args1, sizeof(Arguments)));
+    norm_launcher.add_region_requirement( RegionRequirement(lr1, WRITE_DISCARD, EXCLUSIVE, lr1) );
+    norm_launcher.add_field(0,FID_X);
+    Future f = runtime->execute_task( ctx, norm_launcher );
+    cout<<sqrt(f.get_result<int>())<<endl;
 }
 
 void refine_intra_task(const Task *task, const std::vector<PhysicalRegion> &regions, Context ctx, HighLevelRuntime *runtime){
@@ -463,6 +471,82 @@ void reconstruct_inter_task(const Task *task, const std::vector<PhysicalRegion> 
     }
 }
 
+int norm_task(const Task *task, const std::vector<PhysicalRegion> &regions, Context ctx, HighLevelRuntime *runtime){
+    Arguments args = task->is_index_space ? *(const Arguments *) task->local_args
+    : *(const Arguments *) task->args;
+    int tile_height = args.tile_height;
+    LogicalRegion lr = regions[0].get_logical_region();
+    int max_depth = args.max_depth;
+    Rect<1> helper_Array(0LL, static_cast<coord_t>(pow(2, tile_height-1)));
+    IndexSpace is = runtime->create_index_space(ctx, helper_Array);
+    FieldSpace fs = runtime->create_field_space(ctx);
+    {
+        FieldAllocator allocator = runtime->create_field_allocator(ctx, fs);
+        allocator.allocate_field(sizeof(HelperArgs), FID_X);
+    }
+    LogicalRegion new_helper_Region = runtime->create_logical_region(ctx, is, fs);
+    RegionRequirement req(new_helper_Region, WRITE_DISCARD, EXCLUSIVE, new_helper_Region);
+    req.add_field(FID_X);
+    PhysicalRegion physicalRegion = runtime->map_region( ctx, req );
+    const FieldAccessor<WRITE_DISCARD,HelperArgs,1,coord_t,Realm::AffineAccessor<HelperArgs,1,coord_t> > helper_acc(physicalRegion, FID_X);
+    const FieldAccessor<WRITE_DISCARD,TreeArgs,1,coord_t,Realm::AffineAccessor<TreeArgs,1,coord_t> > tree_acc(regions[0], FID_X);
+    int result=0;
+    queue<Arguments>tree;
+    tree.push(args);
+    int helper_counter = 0;
+    while(!tree.empty()){
+        Arguments temp = tree.front();
+        tree.pop();
+        int n = temp.n;
+        int l = temp.l;
+        coord_t idx = temp.idx;
+        coord_t idx_left_sub_tree = idx+1;
+        coord_t idx_right_sub_tree = idx + static_cast<coord_t>(pow(2, max_depth - n));
+        result = result + tree_acc[idx].value*tree_acc[idx].value;
+        if( tree_acc[idx].is_leaf )
+            continue;
+        if( (n% tile_height )==( tile_height - 1)){
+            helper_acc[helper_counter].n = n;
+            helper_acc[helper_counter].level =l;
+            helper_acc[helper_counter].idx = idx;
+            helper_acc[helper_counter].launch = true;
+            helper_counter++;
+        }
+        else{
+            Arguments for_left_sub_tree (n + 1, l * 2    , max_depth, idx_left_sub_tree, temp.partition_color, temp.actual_max_depth, tile_height);
+            Arguments for_right_sub_tree(n + 1, l * 2 + 1, max_depth, idx_right_sub_tree, temp.partition_color, temp.actual_max_depth, tile_height);
+            tree.push( for_left_sub_tree );
+            tree.push( for_right_sub_tree );
+        }
+    }
+    int task_counter =0;
+    ArgumentMap arg_map;
+    for( int i = 0 ; i < helper_counter ; i++ ){
+        coord_t idx = helper_acc[i].idx;
+        int level = helper_acc[i].level;
+        int nx = helper_acc[i].n;
+        coord_t idx_left_sub_tree = idx+1;
+        coord_t idx_right_sub_tree = idx+ static_cast<coord_t>(pow(2, max_depth - nx));
+        Arguments left_args( nx+1 , 2*level , args.max_depth, idx_left_sub_tree , args.partition_color , args.actual_max_depth , args.tile_height);
+        Arguments right_args( nx+1 , 2*level+1 , args.max_depth, idx_right_sub_tree , args.partition_color, args.actual_max_depth, args.tile_height);
+        arg_map.set_point( task_counter , TaskArgument(&left_args,sizeof(Arguments)));
+        task_counter++;
+        arg_map.set_point( task_counter, TaskArgument(&right_args, sizeof(Arguments)));
+        task_counter++;
+    }
+    if( task_counter > 0 ){
+        LogicalPartition lp = runtime->get_logical_partition_by_color(ctx, lr, args.partition_color);
+        Rect<1> launch_domain(0,task_counter-1);
+        IndexTaskLauncher norm_launcher(NORM_TASK_ID, launch_domain, TaskArgument(NULL, 0), arg_map);
+        norm_launcher.add_region_requirement(RegionRequirement(lp,0,WRITE_DISCARD, EXCLUSIVE, lr));
+        norm_launcher.add_field(0, FID_X);
+        FutureMap f_result = runtime->execute_index_space(ctx, norm_launcher);
+        for( int i = 0 ; i < task_counter ; i++ )
+            result = result + f_result.get_result<int>(i);
+    }
+    return result;
+}
+
 int main(int argc, char** argv){
 
     Runtime::set_top_level_task_id(TOP_LEVEL_TASK_ID);
@@ -513,6 +597,12 @@ int main(int argc, char** argv){
         TaskVariantRegistrar registrar(RECONSTRUCT_INTRA_TASK_ID, "reconstruct_intra");
         registrar.add_constraint(ProcessorConstraint(Processor::LOC_PROC));
         Runtime::preregister_task_variant<reconstruct_intra_task>(registrar, "reconstruct_intra");
+    }
+
+    {
+        TaskVariantRegistrar registrar(NORM_TASK_ID, "norm_task");
+        registrar.add_constraint(ProcessorConstraint(Processor::LOC_PROC));
+        Runtime::preregister_task_variant<int,norm_task>(registrar, "norm_task");
     }
 
     return Runtime::start(argc,argv);
