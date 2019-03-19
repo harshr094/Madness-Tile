@@ -21,6 +21,7 @@ enum TASK_IDs{
     RECONSTRUCT_INTER_TASK_ID,
     RECONSTRUCT_INTRA_TASK_ID,
     NORM_TASK_ID,
+    INNER_PRODUCT_TASK_ID,
 };
 
 enum FieldId{
@@ -38,6 +39,24 @@ struct Arguments {
     int tile_height;
     Arguments(int _n, int _l, int _max_depth, coord_t _idx, Color _partition_color, int _actual_max_depth=0, int _tile_height=1 )
         : n(_n), l(_l), max_depth(_max_depth), idx(_idx), partition_color(_partition_color), actual_max_depth(_actual_max_depth), tile_height(_tile_height)
+    {
+        if (_actual_max_depth == 0) {
+            actual_max_depth = _max_depth;
+        }
+    }
+};
+
+struct InnerProductArgs{
+    int n;
+    int l;
+    int max_depth;
+    coord_t idx;
+    long int gen;
+    Color partition_color1, partition_color2;
+    int actual_max_depth;
+    int tile_height;
+    InnerProductArgs(int _n, int _l, int _max_depth, coord_t _idx, Color _partition_color1, Color _partition_color2, int _actual_max_depth=0, int _tile_height=1 )
+        : n(_n), l(_l), max_depth(_max_depth), idx(_idx), partition_color1(_partition_color1), partition_color2(_partition_color2), actual_max_depth(_actual_max_depth), tile_height(_tile_height)
     {
         if (_actual_max_depth == 0) {
             actual_max_depth = _max_depth;
@@ -90,7 +109,7 @@ void print_task(const Task *task, const std::vector<PhysicalRegion> &regions, Co
 
 void top_level_task(const Task *task, const std::vector<PhysicalRegion> &regions, Context ctx, HighLevelRuntime *runtime) {
 
-    int overall_max_depth = 4;
+    int overall_max_depth = 10;
     int actual_left_depth = 3;
     int tile_height = 3;
 
@@ -127,12 +146,12 @@ void top_level_task(const Task *task, const std::vector<PhysicalRegion> &regions
     refine_launcher.add_field(0, FID_X);
     runtime->execute_task(ctx, refine_launcher);
 
-    cout<<"Launching Print Task After Refine"<<endl;
-    TaskLauncher print_launcher(PRINT_TASK_ID, TaskArgument(&args1, sizeof(Arguments)));
-    RegionRequirement req3( lr1 , READ_ONLY, EXCLUSIVE, lr1 );
-    req3.add_field(FID_X);
-    print_launcher.add_region_requirement( req3 );
-    runtime->execute_task(ctx, print_launcher);
+    // cout<<"Launching Print Task After Refine"<<endl;
+    // TaskLauncher print_launcher(PRINT_TASK_ID, TaskArgument(&args1, sizeof(Arguments)));
+    // RegionRequirement req3( lr1 , READ_ONLY, EXCLUSIVE, lr1 );
+    // req3.add_field(FID_X);
+    // print_launcher.add_region_requirement( req3 );
+    // runtime->execute_task(ctx, print_launcher);
 
     cout<<"Launching Compress Task"<<endl;
     TaskLauncher compress_launcher(COMPRESS_INTER_TASK_ID, TaskArgument(&args1, sizeof(Arguments)));
@@ -141,23 +160,68 @@ void top_level_task(const Task *task, const std::vector<PhysicalRegion> &regions
     runtime->execute_task(ctx, compress_launcher);
 
     cout<<"Launching Print Task After Compress"<<endl;
+    TaskLauncher print_launcher(PRINT_TASK_ID, TaskArgument(&args1, sizeof(Arguments)));
+    RegionRequirement req3( lr1 , READ_ONLY, EXCLUSIVE, lr1 );
+    req3.add_field(FID_X);
+    print_launcher.add_region_requirement( req3 );
     runtime->execute_task(ctx, print_launcher);
 
-    cout<<"Launching Reconstruct Task"<<endl;
-    TaskLauncher reconstruct_launcher(RECONSTRUCT_INTER_TASK_ID, TaskArgument(&args1, sizeof(Arguments)));
-    reconstruct_launcher.add_region_requirement( RegionRequirement(lr1, WRITE_DISCARD, EXCLUSIVE, lr1) );
-    reconstruct_launcher.add_field(0,FID_X);
-    runtime->execute_task(ctx,reconstruct_launcher);
+    // cout<<"Launching Reconstruct Task"<<endl;
+    // TaskLauncher reconstruct_launcher(RECONSTRUCT_INTER_TASK_ID, TaskArgument(&args1, sizeof(Arguments)));
+    // reconstruct_launcher.add_region_requirement( RegionRequirement(lr1, WRITE_DISCARD, EXCLUSIVE, lr1) );
+    // reconstruct_launcher.add_field(0,FID_X);
+    // runtime->execute_task(ctx,reconstruct_launcher);
 
-    cout<<"Launching Print Task After Reconstruct"<<endl;
-    runtime->execute_task(ctx, print_launcher);
+    // cout<<"Launching Print Task After Reconstruct"<<endl;
+    // runtime->execute_task(ctx, print_launcher);
 
-    cout<<"Launching Norm Task on Reconstruct Tree"<<endl;
-    TaskLauncher norm_launcher(NORM_TASK_ID, TaskArgument(&args1, sizeof(Arguments)));
-    norm_launcher.add_region_requirement( RegionRequirement(lr1, WRITE_DISCARD, EXCLUSIVE, lr1) );
-    norm_launcher.add_field(0,FID_X);
-    Future f = runtime->execute_task( ctx, norm_launcher );
-    cout<<sqrt(f.get_result<int>())<<endl;
+    // cout<<"Launching Norm Task on Reconstruct Tree"<<endl;
+    // TaskLauncher norm_launcher(NORM_TASK_ID, TaskArgument(&args1, sizeof(Arguments)));
+    // norm_launcher.add_region_requirement( RegionRequirement(lr1, WRITE_DISCARD, EXCLUSIVE, lr1) );
+    // norm_launcher.add_field(0,FID_X);
+    // Future f = runtime->execute_task( ctx, norm_launcher );
+    // cout<<sqrt(f.get_result<int>())<<endl;
+
+    Rect<1> tree_second(0LL, static_cast<coord_t>(pow(2, overall_max_depth + 1)));
+    IndexSpace is2 = runtime->create_index_space(ctx, tree_second);
+    FieldSpace fs2 = runtime->create_field_space(ctx);
+    {
+        FieldAllocator allocator = runtime->create_field_allocator(ctx, fs2);
+        allocator.allocate_field(sizeof(TreeArgs), FID_X);
+    }
+    LogicalRegion lr2 = runtime->create_logical_region(ctx, is2, fs2);
+    Color partition_color2 = 20;
+    Arguments args2(0, 0, overall_max_depth, 0, partition_color2, actual_left_depth, tile_height);
+    args2.gen = rand();
+    cout<<"Launching Refine Task For 2nd  Tree"<<endl;
+    TaskLauncher refine_launcher2(REFINE_INTER_TASK_ID, TaskArgument(&args2, sizeof(Arguments)));
+    refine_launcher2.add_region_requirement(RegionRequirement(lr2, WRITE_DISCARD, EXCLUSIVE, lr2));
+    refine_launcher2.add_field(0, FID_X);
+    runtime->execute_task(ctx, refine_launcher2);
+
+    cout<<"Launching Compress Task For 2nd Tree"<<endl;
+    TaskLauncher compress_launcher2(COMPRESS_INTER_TASK_ID, TaskArgument(&args2, sizeof(Arguments)));
+    compress_launcher2.add_region_requirement(RegionRequirement(lr2, WRITE_DISCARD, EXCLUSIVE, lr2));
+    compress_launcher2.add_field(0, FID_X);
+    runtime->execute_task(ctx, compress_launcher2);
+
+    cout<<"Launching Print Task After Compress For 2nd Tree"<<endl;
+    TaskLauncher print_launcher2(PRINT_TASK_ID, TaskArgument(&args2, sizeof(Arguments)));
+    RegionRequirement req4( lr2 , READ_ONLY, EXCLUSIVE, lr2 );
+    req4.add_field(FID_X);
+    print_launcher2.add_region_requirement( req4 );
+    runtime->execute_task(ctx, print_launcher2);
+
+    cout<<"Launching Inner Product Task"<<endl;
+    InnerProductArgs args(0, 0, overall_max_depth, 0, partition_color1, partition_color2, actual_left_depth, tile_height);
+    TaskLauncher product_launcher(INNER_PRODUCT_TASK_ID, TaskArgument(&args, sizeof(Arguments)));
+    product_launcher.add_region_requirement(RegionRequirement(lr1, READ_ONLY, EXCLUSIVE, lr1));
+    product_launcher.add_region_requirement(RegionRequirement(lr2, READ_ONLY, EXCLUSIVE, lr2) );
+    product_launcher.add_field(0,FID_X);
+    product_launcher.add_field(1,FID_X);
+    Future result = runtime->execute_task( ctx, product_launcher );
+    cout<<result.get_result<int>()<<endl;
+
 }
 
 void refine_intra_task(const Task *task, const std::vector<PhysicalRegion> &regions, Context ctx, HighLevelRuntime *runtime){
@@ -547,6 +611,89 @@ int norm_task(const Task *task, const std::vector<PhysicalRegion> &regions, Cont
     return result;
 }
 
+
+int product_task(const Task *task, const std::vector<PhysicalRegion> &regions, Context ctx, HighLevelRuntime *runtime){
+    InnerProductArgs args = task->is_index_space ? *(const InnerProductArgs *) task->local_args
+    : *(const InnerProductArgs *) task->args;
+    int tile_height = args.tile_height;
+    int max_depth = args.max_depth;
+    LogicalRegion lr1 = regions[0].get_logical_region();
+    LogicalRegion lr2 = regions[1].get_logical_region();
+    Rect<1> helper_Array(0LL, static_cast<coord_t>(pow(2, tile_height-1)));
+    IndexSpace is = runtime->create_index_space(ctx, helper_Array);
+    FieldSpace fs = runtime->create_field_space(ctx);
+    {
+        FieldAllocator allocator = runtime->create_field_allocator(ctx, fs);
+        allocator.allocate_field(sizeof(HelperArgs), FID_X);
+    }
+    LogicalRegion new_helper_Region = runtime->create_logical_region(ctx, is, fs);
+    RegionRequirement req(new_helper_Region, WRITE_DISCARD, EXCLUSIVE, new_helper_Region);
+    req.add_field(FID_X);
+    PhysicalRegion physicalRegion = runtime->map_region( ctx, req );
+    const FieldAccessor<WRITE_DISCARD,HelperArgs,1,coord_t,Realm::AffineAccessor<HelperArgs,1,coord_t> > helper_acc(physicalRegion, FID_X);
+    const FieldAccessor<READ_ONLY,TreeArgs,1,coord_t,Realm::AffineAccessor<TreeArgs,1,coord_t> > tree1(regions[0], FID_X);
+    const FieldAccessor<READ_ONLY,TreeArgs,1,coord_t,Realm::AffineAccessor<TreeArgs,1,coord_t> > tree2(regions[1], FID_X);
+    queue<InnerProductArgs>tree;
+    tree.push(args);
+    int result = 0;
+    int helper_counter=0;
+    while(!tree.empty()){
+        InnerProductArgs temp = tree.front();
+        tree.pop();
+        int n = temp.n;
+        int l = temp.l;
+        coord_t idx = temp.idx;
+        coord_t idx_left_sub_tree = idx+1;
+        coord_t idx_right_sub_tree = idx + static_cast<coord_t>(pow(2, max_depth - n));
+        bool leaf1 = tree1[idx].is_leaf;
+        bool leaf2 = tree2[idx].is_leaf;
+        result = result + tree1[idx].value*tree2[idx].value;
+        if(leaf1||leaf2)
+            continue;
+        if((n% tile_height )==( tile_height-1 )){
+            helper_acc[helper_counter].n = n;
+            helper_acc[helper_counter].level =l;
+            helper_acc[helper_counter].idx = idx;
+            helper_counter++;
+        }
+        else{
+            InnerProductArgs for_left_sub_tree (n + 1, l * 2    , max_depth, idx_left_sub_tree, temp.partition_color1, temp.partition_color2, temp.actual_max_depth, tile_height);
+            InnerProductArgs for_right_sub_tree(n + 1, l * 2 + 1, max_depth, idx_right_sub_tree, temp.partition_color1, temp.partition_color2 ,temp.actual_max_depth, tile_height);
+            tree.push( for_left_sub_tree );
+            tree.push( for_right_sub_tree );
+        }
+    }
+    int task_counter =0;
+    ArgumentMap arg_map;
+    for( int i = 0 ; i < helper_counter ; i++ ){
+        coord_t idx = helper_acc[i].idx;
+        int level = helper_acc[i].level;
+        int nx = helper_acc[i].n;
+        coord_t idx_left_sub_tree = idx+1;
+        coord_t idx_right_sub_tree = idx+ static_cast<coord_t>(pow(2, max_depth - nx));
+        InnerProductArgs left_args( nx+1 , 2*level , args.max_depth, idx_left_sub_tree , args.partition_color1 , args.partition_color2, args.actual_max_depth , args.tile_height);
+        InnerProductArgs right_args( nx+1 , 2*level+1 , args.max_depth, idx_right_sub_tree , args.partition_color1, args.partition_color2 ,args.actual_max_depth, args.tile_height);
+        arg_map.set_point( task_counter , TaskArgument(&left_args,sizeof(Arguments)));
+        task_counter++;
+        arg_map.set_point( task_counter, TaskArgument(&right_args, sizeof(Arguments)));
+        task_counter++;
+    }
+    if( task_counter > 0 ){
+        LogicalPartition lp1 = runtime->get_logical_partition_by_color(ctx, lr1, args.partition_color1);
+        LogicalPartition lp2 = runtime->get_logical_partition_by_color(ctx, lr2, args.partition_color2);
+        Rect<1> launch_domain(0,task_counter-1);
+        IndexTaskLauncher product_launcher(INNER_PRODUCT_TASK_ID, launch_domain, TaskArgument(NULL, 0), arg_map);
+        product_launcher.add_region_requirement(RegionRequirement(lp1,0,READ_ONLY, EXCLUSIVE, lr1));
+        product_launcher.add_region_requirement(RegionRequirement(lp2,0,READ_ONLY, EXCLUSIVE, lr2));
+        product_launcher.add_field(0,FID_X);
+        product_launcher.add_field(1,FID_X);
+        FutureMap f_result = runtime->execute_index_space(ctx, product_launcher);
+        for( int i = 0 ; i < task_counter ; i++ )
+            result = result + f_result.get_result<int>(i);
+    }
+    return result;
+}
+
 int main(int argc, char** argv){
 
     Runtime::set_top_level_task_id(TOP_LEVEL_TASK_ID);
@@ -603,6 +750,12 @@ int main(int argc, char** argv){
         TaskVariantRegistrar registrar(NORM_TASK_ID, "norm_task");
         registrar.add_constraint(ProcessorConstraint(Processor::LOC_PROC));
         Runtime::preregister_task_variant<int,norm_task>(registrar, "norm_task");
+    }
+
+    {
+        TaskVariantRegistrar registrar(INNER_PRODUCT_TASK_ID, "inner_product_task");
+        registrar.add_constraint(ProcessorConstraint(Processor::LOC_PROC));
+        Runtime::preregister_task_variant<int,product_task>(registrar, "inner_product_task");
     }
 
     return Runtime::start(argc,argv);
