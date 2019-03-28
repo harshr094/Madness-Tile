@@ -11,6 +11,8 @@
 using namespace Legion;
 using namespace std;
 
+
+
 enum TASK_IDs{
     TOP_LEVEL_TASK_ID,
     REFINE_INTER_TASK_ID,
@@ -22,6 +24,8 @@ enum TASK_IDs{
     RECONSTRUCT_INTRA_TASK_ID,
     NORM_TASK_ID,
     INNER_PRODUCT_TASK_ID,
+    GAXPY_INTER_TASK_ID,
+    GAXPY_INTRA_TASK_ID,
 };
 
 enum FieldId{
@@ -64,6 +68,26 @@ struct InnerProductArgs{
     }
 };
 
+struct GaxpyArgs{
+    int n;
+    int l;
+    int max_depth;
+    coord_t idx;
+    long int gen;
+    Color partition_color1, partition_color2, partition_color3;
+    int pass;
+    int actual_max_depth;
+    int tile_height;
+    bool left_null, right_null;
+    GaxpyArgs(int _n, int _l, int _max_depth, coord_t _idx, Color _partition_color1, Color _partition_color2, Color _partition_color3, int _pass, bool _left_null, bool _right_null, int _actual_max_depth=0, int _tile_height=1 )
+        : n(_n), l(_l), max_depth(_max_depth), idx(_idx), partition_color1(_partition_color1), partition_color2(_partition_color2), partition_color3(_partition_color3) ,pass(_pass), left_null(_left_null), right_null(_right_null), actual_max_depth(_actual_max_depth), tile_height(_tile_height)
+    {
+        if (_actual_max_depth == 0) {
+            actual_max_depth = _max_depth;
+        }
+    }
+};
+
 struct TreeArgs{
     int value;
     bool is_leaf;
@@ -80,6 +104,15 @@ struct HelperArgs{
     HelperArgs( int _level, coord_t _idx, bool _launch, int _n , bool _is_valid_entry ) : level(_level), idx(_idx), launch(_launch), n(_n), is_valid_entry( _is_valid_entry ) {}
 };
 
+struct GaxpyHelper{
+    int n,l;
+    coord_t idx;
+    int pass;
+    bool left_null, right_null;
+    bool launch;
+    GaxpyHelper( int _n, int _l, coord_t _idx, int _pass, bool _left_null, bool _right_null , bool _launch ) : n(_n), l(_l), idx(_idx), pass(_pass), left_null(_left_null), right_null(_right_null), launch(_launch)    {}
+};
+
 void print_task(const Task *task, const std::vector<PhysicalRegion> &regions, Context ctxt, HighLevelRuntime *runtime) {
     Arguments args = task->is_index_space ? *(const Arguments *) task->local_args
     : *(const Arguments *) task->args;
@@ -93,6 +126,8 @@ void print_task(const Task *task, const std::vector<PhysicalRegion> &regions, Co
         tree.pop();
         int n = temp.n;
         int l = temp.l;
+        // if( n > max_depth )
+        //     break;
         coord_t idx = temp.idx;
         coord_t idx_left_sub_tree = idx+1;
         coord_t idx_right_sub_tree = idx + static_cast<coord_t>(pow(2, max_depth - n));
@@ -109,9 +144,9 @@ void print_task(const Task *task, const std::vector<PhysicalRegion> &regions, Co
 
 void top_level_task(const Task *task, const std::vector<PhysicalRegion> &regions, Context ctx, HighLevelRuntime *runtime) {
 
-    int overall_max_depth = 10;
+    int overall_max_depth = 12;
     int actual_left_depth = 3;
-    int tile_height = 3;
+    int tile_height = 4;
 
     long int seed = 12345;
     {
@@ -146,25 +181,25 @@ void top_level_task(const Task *task, const std::vector<PhysicalRegion> &regions
     refine_launcher.add_field(0, FID_X);
     runtime->execute_task(ctx, refine_launcher);
 
-    // cout<<"Launching Print Task After Refine"<<endl;
-    // TaskLauncher print_launcher(PRINT_TASK_ID, TaskArgument(&args1, sizeof(Arguments)));
-    // RegionRequirement req3( lr1 , READ_ONLY, EXCLUSIVE, lr1 );
-    // req3.add_field(FID_X);
-    // print_launcher.add_region_requirement( req3 );
-    // runtime->execute_task(ctx, print_launcher);
-
-    cout<<"Launching Compress Task"<<endl;
-    TaskLauncher compress_launcher(COMPRESS_INTER_TASK_ID, TaskArgument(&args1, sizeof(Arguments)));
-    compress_launcher.add_region_requirement(RegionRequirement(lr1, WRITE_DISCARD, EXCLUSIVE, lr1));
-    compress_launcher.add_field(0, FID_X);
-    runtime->execute_task(ctx, compress_launcher);
-
-    cout<<"Launching Print Task After Compress"<<endl;
+    cout<<"Launching Print Task After Refine"<<endl;
     TaskLauncher print_launcher(PRINT_TASK_ID, TaskArgument(&args1, sizeof(Arguments)));
     RegionRequirement req3( lr1 , READ_ONLY, EXCLUSIVE, lr1 );
     req3.add_field(FID_X);
     print_launcher.add_region_requirement( req3 );
     runtime->execute_task(ctx, print_launcher);
+
+    // cout<<"Launching Compress Task"<<endl;
+    // TaskLauncher compress_launcher(COMPRESS_INTER_TASK_ID, TaskArgument(&args1, sizeof(Arguments)));
+    // compress_launcher.add_region_requirement(RegionRequirement(lr1, WRITE_DISCARD, EXCLUSIVE, lr1));
+    // compress_launcher.add_field(0, FID_X);
+    // runtime->execute_task(ctx, compress_launcher);
+
+    // cout<<"Launching Print Task After Compress"<<endl;
+    // TaskLauncher print_launcher(PRINT_TASK_ID, TaskArgument(&args1, sizeof(Arguments)));
+    // RegionRequirement req3( lr1 , READ_ONLY, EXCLUSIVE, lr1 );
+    // req3.add_field(FID_X);
+    // print_launcher.add_region_requirement( req3 );
+    // runtime->execute_task(ctx, print_launcher);
 
     // cout<<"Launching Reconstruct Task"<<endl;
     // TaskLauncher reconstruct_launcher(RECONSTRUCT_INTER_TASK_ID, TaskArgument(&args1, sizeof(Arguments)));
@@ -199,30 +234,62 @@ void top_level_task(const Task *task, const std::vector<PhysicalRegion> &regions
     refine_launcher2.add_field(0, FID_X);
     runtime->execute_task(ctx, refine_launcher2);
 
-    cout<<"Launching Compress Task For 2nd Tree"<<endl;
-    TaskLauncher compress_launcher2(COMPRESS_INTER_TASK_ID, TaskArgument(&args2, sizeof(Arguments)));
-    compress_launcher2.add_region_requirement(RegionRequirement(lr2, WRITE_DISCARD, EXCLUSIVE, lr2));
-    compress_launcher2.add_field(0, FID_X);
-    runtime->execute_task(ctx, compress_launcher2);
+    // cout<<"Launching Compress Task For 2nd Tree"<<endl;
+    // TaskLauncher compress_launcher2(COMPRESS_INTER_TASK_ID, TaskArgument(&args2, sizeof(Arguments)));
+    // compress_launcher2.add_region_requirement(RegionRequirement(lr2, WRITE_DISCARD, EXCLUSIVE, lr2));
+    // compress_launcher2.add_field(0, FID_X);
+    // runtime->execute_task(ctx, compress_launcher2);
 
-    cout<<"Launching Print Task After Compress For 2nd Tree"<<endl;
+    cout<<"Launching Print Task For 2nd Tree"<<endl;
     TaskLauncher print_launcher2(PRINT_TASK_ID, TaskArgument(&args2, sizeof(Arguments)));
     RegionRequirement req4( lr2 , READ_ONLY, EXCLUSIVE, lr2 );
     req4.add_field(FID_X);
     print_launcher2.add_region_requirement( req4 );
     runtime->execute_task(ctx, print_launcher2);
 
-    cout<<"Launching Inner Product Task"<<endl;
-    InnerProductArgs args(0, 0, overall_max_depth, 0, partition_color1, partition_color2, actual_left_depth, tile_height);
-    TaskLauncher product_launcher(INNER_PRODUCT_TASK_ID, TaskArgument(&args, sizeof(Arguments)));
-    product_launcher.add_region_requirement(RegionRequirement(lr1, READ_ONLY, EXCLUSIVE, lr1));
-    product_launcher.add_region_requirement(RegionRequirement(lr2, READ_ONLY, EXCLUSIVE, lr2) );
-    product_launcher.add_field(0,FID_X);
-    product_launcher.add_field(1,FID_X);
-    Future result = runtime->execute_task( ctx, product_launcher );
-    cout<<result.get_result<int>()<<endl;
+    // cout<<"Launching Inner Product Task"<<endl;
+    // InnerProductArgs args(0, 0, overall_max_depth, 0, partition_color1, partition_color2, actual_left_depth, tile_height);
+    // TaskLauncher product_launcher(INNER_PRODUCT_TASK_ID, TaskArgument(&args, sizeof(Arguments)));
+    // product_launcher.add_region_requirement(RegionRequirement(lr1, READ_ONLY, EXCLUSIVE, lr1));
+    // product_launcher.add_region_requirement(RegionRequirement(lr2, READ_ONLY, EXCLUSIVE, lr2) );
+    // product_launcher.add_field(0,FID_X);
+    // product_launcher.add_field(1,FID_X);
+    // Future result = runtime->execute_task( ctx, product_launcher );
+    // cout<<result.get_result<int>()<<endl;
+
+    Rect<1> gaxpy_tree(0LL, static_cast<coord_t>(pow(2, overall_max_depth + 1)));
+    IndexSpace isgaxpy = runtime->create_index_space(ctx, gaxpy_tree);
+    FieldSpace fsgaxpy = runtime->create_field_space(ctx);
+    {
+        FieldAllocator allocator = runtime->create_field_allocator(ctx, fsgaxpy);
+        allocator.allocate_field(sizeof(TreeArgs), FID_X);
+    }
+    LogicalRegion lrgaxpy = runtime->create_logical_region(ctx, isgaxpy, fsgaxpy);
+    Color partition_color3 = 30;
+    GaxpyArgs args(0, 0, overall_max_depth, 0, partition_color1, partition_color2, partition_color3, 0, false, false, actual_left_depth, tile_height);
+ 
+    cout<<"Launching Gaxpy Taks for Tree"<<endl;
+    TaskLauncher gaxpy_launcher(GAXPY_INTER_TASK_ID, TaskArgument(&args, sizeof(GaxpyArgs)));
+    RegionRequirement req1(lr1, READ_ONLY, EXCLUSIVE, lr1);
+    req1.add_field(FID_X);
+    RegionRequirement req2(lr2, READ_ONLY, EXCLUSIVE , lr2);
+    req2.add_field(FID_X);
+    RegionRequirement reqgaxpy(lrgaxpy, WRITE_DISCARD, EXCLUSIVE, lrgaxpy);
+    reqgaxpy.add_field(FID_X);
+    gaxpy_launcher.add_region_requirement(req1);
+    gaxpy_launcher.add_region_requirement(req2);
+    gaxpy_launcher.add_region_requirement(reqgaxpy);
+    runtime->execute_task(ctx, gaxpy_launcher);
+    cout<<"Launching Print Task for Gaxpy"<<endl;
+    TaskLauncher print_gaxpy(PRINT_TASK_ID, TaskArgument(&args2, sizeof(Arguments)));
+    RegionRequirement gaxpy_req( lrgaxpy , READ_ONLY, EXCLUSIVE, lrgaxpy );
+    gaxpy_req.add_field(FID_X);
+    print_gaxpy.add_region_requirement( gaxpy_req );
+    runtime->execute_task(ctx, print_gaxpy );
 
 }
+
+
 
 void refine_intra_task(const Task *task, const std::vector<PhysicalRegion> &regions, Context ctx, HighLevelRuntime *runtime){
 
@@ -274,6 +341,230 @@ void refine_intra_task(const Task *task, const std::vector<PhysicalRegion> &regi
         }
         
     }
+}
+
+
+void gaxpy_intra_task(const Task *task, const std::vector<PhysicalRegion> &regions, Context ctx, HighLevelRuntime *runtime){
+    GaxpyArgs args = task->is_index_space ? *(const GaxpyArgs *) task->local_args
+    : *(const GaxpyArgs *) task->args;
+    int tile_height = args.tile_height;
+    queue<GaxpyArgs>tree;
+    tree.push(args);
+    coord_t idx_left_sub_tree = 0LL;
+    coord_t idx_right_sub_tree = 0LL;
+    int helper_counter=0;
+    int max_depth = args.max_depth;
+    const FieldAccessor<READ_ONLY,TreeArgs,1,coord_t,Realm::AffineAccessor<TreeArgs,1,coord_t> > tree1(regions[0], FID_X);
+    const FieldAccessor<READ_ONLY,TreeArgs,1,coord_t,Realm::AffineAccessor<TreeArgs,1,coord_t> > tree2(regions[1], FID_X);
+    const FieldAccessor<WRITE_DISCARD,TreeArgs,1,coord_t,Realm::AffineAccessor<TreeArgs,1,coord_t> > tree3(regions[2], FID_X);    
+    const FieldAccessor<WRITE_DISCARD,GaxpyHelper,1,coord_t,Realm::AffineAccessor<GaxpyHelper,1,coord_t> > helper_acc(regions[3], FID_X);  
+
+    while(!tree.empty()){
+        GaxpyArgs temp = tree.front();
+        tree.pop();
+        int n = temp.n;
+        int l = temp.l;
+        int pass = temp.pass;
+        coord_t idx = temp.idx;
+        idx_left_sub_tree = idx+1;
+        idx_right_sub_tree = idx + static_cast<coord_t>(pow(2, max_depth - n));
+        bool left_null = temp.left_null;
+        bool right_null = temp.right_null;
+        int value;
+        if( n > max_depth )
+            break;
+        if( left_null ){
+            if(tree2[idx].is_leaf){
+                value = pass + tree2[idx].value;
+                tree3[idx].value = value;
+                tree3[idx].is_leaf = true;
+            }
+            else{
+                if((n%tile_height)==(tile_height-1)){
+                    helper_acc[helper_counter].n=n;
+                    helper_acc[helper_counter].l=l;
+                    helper_acc[helper_counter].pass = pass/2;
+                    helper_acc[helper_counter].launch = true;
+                    helper_acc[helper_counter].idx = idx;
+                    helper_acc[helper_counter].left_null = left_null;
+                    helper_acc[helper_counter].right_null = right_null;
+                    helper_counter++;
+                }
+                else{
+                    GaxpyArgs for_left_sub_tree( n+1, l*2, max_depth, idx_left_sub_tree, temp.partition_color1, temp.partition_color2, temp.partition_color3, pass/2, left_null, right_null, temp.actual_max_depth, temp.tile_height);
+                    GaxpyArgs for_right_sub_tree(n+1, l*2, max_depth, idx_right_sub_tree, temp.partition_color1, temp.partition_color2, temp.partition_color3, pass/2, left_null, right_null, temp.actual_max_depth, temp.tile_height);
+                    tree.push( for_left_sub_tree );
+                    tree.push( for_right_sub_tree );
+                }
+            }
+        }
+        else if( right_null ){
+            if( tree1[idx].is_leaf){
+                value = pass + tree1[idx].value;
+                tree3[idx].value = value;
+                tree3[idx].is_leaf = true;
+            }
+            else{
+                if((n%tile_height)==(tile_height-1)){
+                    helper_acc[helper_counter].n=n;
+                    helper_acc[helper_counter].l=l;
+                    helper_acc[helper_counter].pass = pass/2;
+                    helper_acc[helper_counter].launch = true;
+                    helper_acc[helper_counter].idx = idx;
+                    helper_acc[helper_counter].left_null = left_null;
+                    helper_acc[helper_counter].right_null = right_null;
+                    helper_counter++;
+                }
+                else{
+                    GaxpyArgs for_left_sub_tree( n+1, l*2, max_depth, idx_left_sub_tree, temp.partition_color1, temp.partition_color2, temp.partition_color3, pass/2, left_null, right_null, temp.actual_max_depth, temp.tile_height);
+                    GaxpyArgs for_right_sub_tree(n+1, l*2, max_depth, idx_right_sub_tree, temp.partition_color1, temp.partition_color2, temp.partition_color3, pass/2, left_null, right_null, temp.actual_max_depth, temp.tile_height);
+                    tree.push( for_left_sub_tree );
+                    tree.push( for_right_sub_tree );
+                }   
+            }
+        }
+        else{
+            if( (tree1[idx].is_leaf )&&( tree2[idx].is_leaf )){
+                value = tree1[idx].value + tree2[idx].value;
+                tree3[idx].value = value;
+                tree3[idx].is_leaf = true;
+            }
+            else if(tree1[idx].is_leaf){
+                value = tree1[idx].value;
+                if((n%tile_height)==(tile_height-1)){
+                    helper_acc[helper_counter].n=n;
+                    helper_acc[helper_counter].l=l;
+                    helper_acc[helper_counter].pass = value/2;
+                    helper_acc[helper_counter].launch = true;
+                    helper_acc[helper_counter].idx = idx;
+                    helper_acc[helper_counter].left_null = true;
+                    helper_acc[helper_counter].right_null = right_null;
+                    helper_counter++;
+                }
+                else{
+                    GaxpyArgs for_left_sub_tree( n+1, l*2, max_depth, idx_left_sub_tree, temp.partition_color1, temp.partition_color2, temp.partition_color3, value/2, true, right_null, temp.actual_max_depth, temp.tile_height);
+                    GaxpyArgs for_right_sub_tree(n+1, l*2, max_depth, idx_right_sub_tree, temp.partition_color1, temp.partition_color2, temp.partition_color3, value/2, true, right_null, temp.actual_max_depth, temp.tile_height);
+                    tree.push( for_left_sub_tree );
+                    tree.push( for_right_sub_tree );
+                }   
+            }
+            else if(tree2[idx].is_leaf){
+                value = tree2[idx].value;
+                if((n%tile_height)==(tile_height-1)){
+                    helper_acc[helper_counter].n=n;
+                    helper_acc[helper_counter].l=l;
+                    helper_acc[helper_counter].pass = value/2;
+                    helper_acc[helper_counter].launch = true;
+                    helper_acc[helper_counter].idx = idx;
+                    helper_acc[helper_counter].left_null = left_null;
+                    helper_acc[helper_counter].right_null = true;
+                    helper_counter++;
+                }
+                else{
+                    GaxpyArgs for_left_sub_tree( n+1, l*2, max_depth, idx_left_sub_tree, temp.partition_color1, temp.partition_color2, temp.partition_color3, value/2, left_null, true, temp.actual_max_depth, temp.tile_height);
+                    GaxpyArgs for_right_sub_tree(n+1, l*2, max_depth, idx_right_sub_tree, temp.partition_color1, temp.partition_color2, temp.partition_color3, value/2, left_null, true, temp.actual_max_depth, temp.tile_height);
+                    tree.push( for_left_sub_tree );
+                    tree.push( for_right_sub_tree );
+                }   
+            }
+            else{
+                if((n%tile_height)==(tile_height-1)){
+                    helper_acc[helper_counter].n=n;
+                    helper_acc[helper_counter].l=l;
+                    helper_acc[helper_counter].pass = 0;
+                    helper_acc[helper_counter].launch = true;
+                    helper_acc[helper_counter].idx = idx;
+                    helper_acc[helper_counter].left_null = left_null;
+                    helper_acc[helper_counter].right_null = right_null;
+                    helper_counter++;
+                }
+                else{
+                    GaxpyArgs for_left_sub_tree( n+1, l*2, max_depth, idx_left_sub_tree, temp.partition_color1, temp.partition_color2, temp.partition_color3, 0, left_null, right_null, temp.actual_max_depth, temp.tile_height);
+                    GaxpyArgs for_right_sub_tree(n+1, l*2, max_depth, idx_right_sub_tree, temp.partition_color1, temp.partition_color2, temp.partition_color3, 0, left_null, right_null, temp.actual_max_depth, temp.tile_height);
+                    tree.push( for_left_sub_tree );
+                    tree.push( for_right_sub_tree );
+                }   
+            }
+        }
+    }
+
+
+
+
+}
+void gaxpy_inter_task(const Task *task, const std::vector<PhysicalRegion> &regions, Context ctx, HighLevelRuntime *runtime){
+    GaxpyArgs args = task->is_index_space ? *(const GaxpyArgs *) task->local_args
+    : *(const GaxpyArgs *) task->args;
+    int tile_height = args.tile_height;
+    int max_depth = args.max_depth;
+    Rect<1> helper_Array(0LL, static_cast<coord_t>(pow(2, tile_height-1)));
+    IndexSpace is = runtime->create_index_space(ctx, helper_Array);
+    FieldSpace fs = runtime->create_field_space(ctx);
+    {
+        FieldAllocator allocator = runtime->create_field_allocator(ctx, fs);
+        allocator.allocate_field(sizeof(GaxpyHelper), FID_X);
+    }
+    LogicalRegion tree1 = regions[0].get_logical_region();
+    LogicalRegion tree2 = regions[1].get_logical_region();
+    LogicalRegion tree3 = regions[2].get_logical_region();
+    LogicalRegion new_helper_Region = runtime->create_logical_region(ctx, is, fs);
+    RegionRequirement req1(tree1, READ_ONLY, EXCLUSIVE, tree1);
+    req1.add_field(FID_X);
+    RegionRequirement req2(tree2, READ_ONLY, EXCLUSIVE, tree2);
+    req2.add_field(FID_X);
+    RegionRequirement req3(tree3, WRITE_DISCARD, EXCLUSIVE, tree3);
+    req3.add_field(FID_X);
+    RegionRequirement req4(new_helper_Region, WRITE_DISCARD, EXCLUSIVE, new_helper_Region);
+    req4.add_field(FID_X);
+    TaskLauncher gaxpy_intra_launcher(GAXPY_INTRA_TASK_ID, TaskArgument(&args,sizeof(GaxpyArgs)));
+    gaxpy_intra_launcher.add_region_requirement(req1);
+    gaxpy_intra_launcher.add_region_requirement(req2);
+    gaxpy_intra_launcher.add_region_requirement(req3);
+    gaxpy_intra_launcher.add_region_requirement(req4);
+    runtime->execute_task(ctx,gaxpy_intra_launcher);
+    ArgumentMap arg_map;
+    PhysicalRegion physicalRegion = runtime->map_region( ctx, req4 );
+    const FieldAccessor<READ_ONLY,GaxpyHelper,1,coord_t,Realm::AffineAccessor<GaxpyHelper,1,coord_t> > read_acc(physicalRegion, FID_X);
+    int task_counter = 0;
+    vector<pair<coord_t,coord_t> >color_index;
+    for( int i = 0 ; i < (1<<(tile_height-1)); i++){
+        if(!read_acc[i].launch)
+            break;
+        coord_t idx = read_acc[i].idx;
+        int l = read_acc[i].l;
+        int nx = read_acc[i].n;
+        int pass = read_acc[i].pass;
+        bool left_null = read_acc[i].left_null;
+        bool right_null = read_acc[i].right_null;
+        coord_t idx_left_sub_tree = idx+1;
+        coord_t idx_right_sub_tree = idx+ static_cast<coord_t>(pow(2, max_depth - nx));
+        GaxpyArgs left_args( nx+1, 2*l , args.max_depth, idx_left_sub_tree, args.partition_color1, args.partition_color2, args.partition_color3, pass, left_null, right_null , args.actual_max_depth, args.tile_height);
+        GaxpyArgs right_args( nx+1, 2*l +1 , args.max_depth, idx_right_sub_tree, args.partition_color1, args.partition_color2, args.partition_color3, pass, left_null, right_null , args.actual_max_depth, args.tile_height);
+        arg_map.set_point( task_counter, TaskArgument(&left_args, sizeof(GaxpyArgs)));
+        task_counter++;
+        arg_map.set_point( task_counter, TaskArgument(&right_args, sizeof(GaxpyArgs)));        
+        task_counter++;
+        color_index.push_back(make_pair(idx_left_sub_tree,idx_right_sub_tree-1));
+        color_index.push_back(make_pair(idx_right_sub_tree, idx_right_sub_tree +  static_cast<coord_t>(pow(2, max_depth - nx)) - 2) );
+    }
+    if( task_counter > 0 ){
+        IndexSpace is = tree3.get_index_space();
+        DomainPointColoring coloring;
+        for( int i = 0 ; i < task_counter ; i++ ){
+            coloring[i]= Rect<1>(color_index[i].first,color_index[i].second);
+        }
+        Rect<1>color_space = Rect<1>(0,task_counter-1);
+        IndexPartition ip = runtime->create_index_partition(ctx, is, color_space, coloring, DISJOINT_KIND, args.partition_color3);
+        LogicalPartition lp = runtime->get_logical_partition(ctx, tree3, ip);
+        Rect<1> launch_domain(0,task_counter-1);
+        IndexTaskLauncher gaxpy_launcher(GAXPY_INTER_TASK_ID, launch_domain, TaskArgument(NULL, 0), arg_map);
+        RegionRequirement newregion(lp,0,WRITE_DISCARD,EXCLUSIVE,tree3);
+        newregion.add_field(0,FID_X);
+        gaxpy_launcher.add_region_requirement(req1);
+        gaxpy_launcher.add_region_requirement(req2);
+        gaxpy_launcher.add_region_requirement(newregion);
+        runtime->execute_index_space(ctx, gaxpy_launcher);
+    }  
 }
 
 void refine_inter_task(const Task *task, const std::vector<PhysicalRegion> &regions, Context ctx, HighLevelRuntime *runtime) {
@@ -756,6 +1047,18 @@ int main(int argc, char** argv){
         TaskVariantRegistrar registrar(INNER_PRODUCT_TASK_ID, "inner_product_task");
         registrar.add_constraint(ProcessorConstraint(Processor::LOC_PROC));
         Runtime::preregister_task_variant<int,product_task>(registrar, "inner_product_task");
+    }
+
+    {
+        TaskVariantRegistrar registrar(GAXPY_INTRA_TASK_ID, "gaxpy_intra");
+        registrar.add_constraint(ProcessorConstraint(Processor::LOC_PROC));
+        Runtime::preregister_task_variant<gaxpy_intra_task>(registrar, "gaxpy_intra");
+    }
+
+    {
+        TaskVariantRegistrar registrar(GAXPY_INTER_TASK_ID, "gaxpy_inter");
+        registrar.add_constraint(ProcessorConstraint(Processor::LOC_PROC));
+        Runtime::preregister_task_variant<gaxpy_inter_task>(registrar, "gaxpy_inter");
     }
 
     return Runtime::start(argc,argv);
